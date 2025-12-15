@@ -1,0 +1,8 @@
+# Sanal ortam ve derleme ciktilari
+.venv/
+__pycache__/
+*.pyc
+
+# Streamlit cache
+.streamlit/
+
