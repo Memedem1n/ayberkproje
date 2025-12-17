@@ -89,42 +89,6 @@ TOPSIS_YONLERI = {kriter: "maliyet" for kriter in KRITERLER}
 # Yardimci fonksiyonlar
 # ---------------------------------------------------------------------------
 
-
-def varsayilan_ikili_karsilastirma_df_olustur(kriterler: list[str]) -> pd.DataFrame:
-    """
-    AHP icin ikili karsilastirma matrisi baslangici:
-    - Tum kriterler esit onemde (1)
-    """
-
-    n = len(kriterler)
-    return pd.DataFrame(np.ones((n, n), dtype=float), index=kriterler, columns=kriterler)
-
-
-def karsiliklilik_uygula(ikili_df: pd.DataFrame) -> np.ndarray:
-    """
-    AHP icin zorunlu kural:
-    - kosegen = 1
-    - a_ji = 1 / a_ij
-
-    Kullanici matrisi duzenlerken hatali/eksik giris yapsa bile burada duzeltilir.
-    """
-
-    kriterler = list(ikili_df.index)
-    n = len(kriterler)
-    degerler = ikili_df.to_numpy(dtype=float, copy=True)
-
-    for i in range(n):
-        degerler[i, i] = 1.0
-        for j in range(i + 1, n):
-            v = degerler[i, j]
-            if not np.isfinite(v) or v <= 0:
-                v = 1.0
-            degerler[i, j] = float(v)
-            degerler[j, i] = 1.0 / float(v)
-
-    return degerler
-
-
 def arac_etiketi(satir: pd.Series) -> str:
     """
     Tablo ve sonuc ekraninda arac ismini tek satirda gostermek icin kullanilir.
@@ -228,88 +192,56 @@ if not kullanici_tercihleri:
     st.stop()
 
 
-# 4) AHP
-st.subheader("3) AHP (Kriter Agirliklari)")
-st.write("Ikili karsilastirma matrisini duzenleyin ve AHP agirliklarini hesaplayin.")
+# 4) AHP ve TOPSIS (Otomatik)
+st.subheader("3) AHP ve TOPSIS (Otomatik)")
+st.write("Kriterlerin tamami es agirlikli olarak AHP hesaplanir; TOPSIS siralamasi otomatik yapilir.")
 
-ikili_df = st.session_state.get("ikili_karsilastirma_df")
-if ikili_df is None:
-    ikili_df = varsayilan_ikili_karsilastirma_df_olustur(KRITERLER)
-st.session_state["ikili_karsilastirma_df"] = ikili_df
+try:
+    varsayilan_matris = np.ones((len(KRITERLER), len(KRITERLER)), dtype=float)
+    ahp_sonuc = utils.ahp_agirliklarini_hesapla(varsayilan_matris, KRITERLER)
+    st.session_state["ahp_sonuc"] = ahp_sonuc
 
-duzenlenen_ikili_df = st.data_editor(ikili_df, use_container_width=True, key="ikili_karsilastirma_duzenleyici")
+    sol, sag = st.columns([2, 1])
+    with sol:
+        st.write("**Agirliklar**")
+        st.dataframe(ahp_sonuc.agirliklar.to_frame(), use_container_width=True)
+        st.bar_chart(ahp_sonuc.agirliklar, use_container_width=True)
 
-ahp_hesapla = st.button("AHP Hesapla", type="primary")
-if ahp_hesapla:
-    try:
-        ikili_matris = karsiliklilik_uygula(duzenlenen_ikili_df)
-        ahp_sonuc = utils.ahp_agirliklarini_hesapla(ikili_matris, KRITERLER)
-        st.session_state["ahp_sonuc"] = ahp_sonuc
-        st.session_state["ikili_karsilastirma_df"] = pd.DataFrame(ikili_matris, index=KRITERLER, columns=KRITERLER)
-        st.success("AHP hesaplandi.")
-    except Exception as hata:
-        st.error(f"AHP hatasi: {hata}")
+    with sag:
+        st.write("**Tutarlilik**")
+        st.metric("Lambda maks", f"{ahp_sonuc.lambda_maks:.4f}")
+        st.metric("CI", f"{ahp_sonuc.ci:.4f}")
+        st.metric("CR", f"{ahp_sonuc.cr:.4f}")
 
-ahp_sonuc: utils.AHPHesapSonucu | None = st.session_state.get("ahp_sonuc")
-if ahp_sonuc is None:
-    st.info("AHP icin matrisi duzenleyip 'AHP Hesapla' butonuna basin.")
+    karar = utils.kullanici_maliyet_matrisi_olustur(
+        araclar_df,
+        kullanici_yakit_tipi=kullanici_tercihleri["yakit_tipi"],
+        kullanici_beygir_gucu=kullanici_tercihleri["beygir_gucu"],
+        kullanici_kapi_sayisi=kullanici_tercihleri["kapi_sayisi"],
+        kullanici_kasa_tipi=kullanici_tercihleri["kasa_tipi"],
+        yakit_puanlari=yakit_puanlari,
+        kasa_puanlari=kasa_puanlari,
+    )
+
+    puanlar = utils.topsis_puanlarini_hesapla(
+        karar,
+        agirliklar=ahp_sonuc.agirliklar.to_dict(),
+        yonler=TOPSIS_YONLERI,
+    )
+
+    sirali = araclar_df.copy()
+    sirali["topsis_puani"] = puanlar
+    sirali = sirali.sort_values("topsis_puani", ascending=False).reset_index(drop=True)
+    sirali["sira"] = np.arange(1, len(sirali) + 1)
+    st.session_state["sirali_df"] = sirali
+    st.success("TOPSIS siralamasi tamamlandi.")
+except Exception as hata:
+    st.error(f"Hesaplama hatasi: {hata}")
     st.stop()
-
-sol, sag = st.columns([2, 1])
-with sol:
-    st.write("**Agirliklar**")
-    st.dataframe(ahp_sonuc.agirliklar.to_frame(), use_container_width=True)
-    st.bar_chart(ahp_sonuc.agirliklar, use_container_width=True)
-
-with sag:
-    st.write("**Tutarlilik**")
-    st.metric("Lambda maks", f"{ahp_sonuc.lambda_maks:.4f}")
-    st.metric("CI", f"{ahp_sonuc.ci:.4f}")
-    st.metric("CR", f"{ahp_sonuc.cr:.4f}")
-
-
-# 5) TOPSIS
-st.subheader("4) TOPSIS (Arac Siralama)")
-
-if ahp_sonuc.cr > CR_ESIGI:
-    st.warning(f"CR={ahp_sonuc.cr:.3f} (> {CR_ESIGI}). Matris tutarsiz olabilir.")
-    devam_et = st.checkbox("Yine de TOPSIS calistir (onerilmez).", value=False)
-else:
-    devam_et = True
-
-topsis_calistir = st.button("TOPSIS Calistir", disabled=not devam_et)
-
-if topsis_calistir:
-    try:
-        karar = utils.kullanici_maliyet_matrisi_olustur(
-            araclar_df,
-            kullanici_yakit_tipi=kullanici_tercihleri["yakit_tipi"],
-            kullanici_beygir_gucu=kullanici_tercihleri["beygir_gucu"],
-            kullanici_kapi_sayisi=kullanici_tercihleri["kapi_sayisi"],
-            kullanici_kasa_tipi=kullanici_tercihleri["kasa_tipi"],
-            yakit_puanlari=yakit_puanlari,
-            kasa_puanlari=kasa_puanlari,
-        )
-
-        puanlar = utils.topsis_puanlarini_hesapla(
-            karar,
-            agirliklar=ahp_sonuc.agirliklar.to_dict(),
-            yonler=TOPSIS_YONLERI,
-        )
-
-        sirali = araclar_df.copy()
-        sirali["topsis_puani"] = puanlar
-        sirali = sirali.sort_values("topsis_puani", ascending=False).reset_index(drop=True)
-        sirali["sira"] = np.arange(1, len(sirali) + 1)
-
-        st.session_state["sirali_df"] = sirali
-        st.success("TOPSIS siralamasi tamamlandi.")
-    except Exception as hata:
-        st.error(f"TOPSIS hatasi: {hata}")
 
 sirali_df: pd.DataFrame | None = st.session_state.get("sirali_df")
 if sirali_df is None:
-    st.info("TOPSIS siralamasi icin 'TOPSIS Calistir' butonuna basin.")
+    st.error("Sirali sonuclar olusturulamadi.")
     st.stop()
 
 
